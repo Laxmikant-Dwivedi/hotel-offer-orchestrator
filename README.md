@@ -4,6 +4,52 @@ Aggregates overlapping hotel offers from two mock suppliers, dedupes hotels by n
 selects the best (cheapest) offer per hotel. Orchestration is done with **Temporal.io**,
 and deduped results are cached in **Redis**, which also does the price-range filtering.
 
+## Approach / Notes
+
+**Design decisions**
+
+- The workflow calls both suppliers in parallel (`Promise.allSettled`, not sequential
+  `await`s) so a slow or failing supplier doesn't hold up the other.
+- Dedup keeps the cheaper of the two prices per hotel name; if only one supplier
+  returned a given name, that offer passes through unchanged — no special-casing
+  needed since the dedup is just "keep the lower price seen so far per name."
+- Activities call the mock suppliers over real HTTP (`api:3000/supplierA/hotels`, not
+  an in-process function call), even though `api` and `worker` could share code
+  directly. This matches the assignment's "calls two mocked supplier APIs" framing
+  and makes the outage simulation (`down=true` / `simulateDown=A|B`) exercise a real
+  network failure + Temporal retry, not just a code branch.
+- `api` and `worker` are two processes built from the same image (different `CMD`),
+  mirroring how you'd actually split a web tier from a Temporal worker tier in
+  production, rather than running the worker in-process with Express.
+- Redis holds the deduped list as a sorted set scored by price specifically so
+  `minPrice`/`maxPrice` filtering is a native `ZRANGEBYSCORE`, per the requirement
+  that filtering happen "inside Redis" rather than in application code.
+- `/api/hotels` re-runs the workflow (and overwrites the Redis entry) on every call
+  rather than serving from cache first. Given the mock suppliers are static and
+  cheap to call, freshness seemed more useful to demonstrate than a cache layer with
+  its own invalidation logic — Redis here is the filtering engine more than a cache,
+  though it does carry a TTL (`HOTELS_CACHE_TTL_SECONDS`, default 300s).
+
+**Assumptions**
+
+- Mock catalogs only give meaningful overlap for `delhi` and `mumbai`; `bangalore` has
+  Supplier A-only data (exercises "only one supplier returned it"); any other city
+  returns `[]` (exercises the "no results" case) rather than a 404, since an empty
+  result set is a valid answer to "hotels in a city we don't have data for."
+- `simulateDown` on `/api/hotels` isn't part of the assignment's required contract —
+  it's a testing affordance so the optional "simulate one supplier being down"
+  Postman scenario can exercise the actual workflow's degrade-gracefully path,
+  instead of only hitting the raw mock endpoint directly with `down=true`.
+
+**Known limitations**
+
+- The `render.yaml` Blueprint (see "Deploying to Render" below) was written from
+  Render's documented spec without a live account to verify against, and needed one
+  round of fixes once actually tried against the dashboard (an invalid `port:` field).
+  Treat it as a solid starting point, not a guaranteed one-click deploy.
+- No auth, rate-limiting, or workflow-history query endpoints — out of scope for a
+  mock aggregator exercise.
+
 ## Architecture
 
 ```
