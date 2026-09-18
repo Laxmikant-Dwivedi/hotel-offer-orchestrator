@@ -140,6 +140,51 @@ connection attempt, in which case the worker container exits and Docker restarts
 no action needed. `api` doesn't have this issue since it connects to Temporal lazily,
 only when the first `/api/hotels` request comes in.
 
+## Deploying to Render
+
+[`render.yaml`](render.yaml) is a Blueprint that mirrors the Compose stack: Temporal
+Server + Postgres (Temporal's persistence) + Redis + the `hotel-api` web service +
+the `hotel-worker` background worker, plus Temporal UI.
+
+1. Push this repo to GitHub (already done if you're reading this from the repo).
+2. Render dashboard → **New** → **Blueprint** → select this repo/branch.
+3. Render parses `render.yaml` and shows every service it's about to create. Review,
+   then **Apply**.
+4. First deploy takes a few minutes: Postgres provisions, Temporal runs its schema
+   migration, then `hotel-api`/`hotel-worker` build from the repo `Dockerfile`.
+5. Once `hotel-api` is live, its Render-assigned URL serves the same routes as local:
+   `https://<hotel-api>.onrender.com/health`, `/api/hotels?city=delhi`, etc.
+
+Costs & tradeoffs worth knowing before you click Apply:
+
+- None of `temporal`, `temporal-ui`, `hotel-api`, or `hotel-worker` run on Render's
+  free tier — image-based and background-worker services require a paid plan
+  (`starter` in the Blueprint). Postgres and the Redis-compatible Key Value store do
+  have free plans, but Render's free Postgres expires after a fixed retention window,
+  not indefinitely — fine for a demo, not for something long-lived.
+  If you only want to show the assignment is deployable without keeping it running,
+  spin it up, verify the endpoints, then delete the services (or suspend them) from
+  the dashboard afterward.
+- If you'd rather not host Temporal Server yourself, swap `TEMPORAL_ADDRESS` on
+  `hotel-api`/`hotel-worker` for a [Temporal Cloud](https://temporal.io/cloud)
+  namespace and delete the `temporal`/`temporal-ui`/`temporal-postgres` blocks from
+  `render.yaml` — fewer moving parts, but requires a separate Temporal Cloud account
+  and mTLS client certs.
+- This Blueprint was authored without a live Render account to verify field-by-field,
+  so a couple of things are worth double-checking once the services exist in your
+  dashboard:
+  - **Internal networking**: services reference each other by hostname (`temporal:7233`,
+    `http://hotel-api:3000`). This relies on Render's private networking between
+    services in the same project — if `hotel-worker`'s logs show it can't resolve
+    `temporal`, check each service's **Settings → Networking** for its actual internal
+    address and update the corresponding env var to match.
+  - **Postgres TLS**: Render's managed Postgres requires TLS. The Blueprint sets
+    `POSTGRES_TLS_ENABLED=true` and disables host verification as a pragmatic default;
+    if `temporal`'s logs show a TLS/certificate error, that's the first place to look.
+  - **Ports on image-based services**: `temporal` and `temporal-ui` use `runtime: image`
+    with an explicit `port:` field. If Render doesn't route traffic on the expected
+    port, set it explicitly in that service's dashboard settings.
+
 ## Running locally without Docker
 
 Requires Node.js 20+, a running Redis instance, and a running Temporal Server
@@ -210,6 +255,7 @@ See [`.env.example`](.env.example). Key ones:
 | `PORT` | `3000` | API port |
 | `SELF_BASE_URL` | `http://localhost:3000` | Base URL the Temporal activities use to call the mock supplier endpoints |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Redis connection |
+| `REDIS_URL` | _(unset)_ | Full `redis://` connection string; overrides `REDIS_HOST`/`REDIS_PORT` when set (used on Render) |
 | `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal Server gRPC address |
 | `TEMPORAL_NAMESPACE` | `default` | Temporal namespace |
 | `TEMPORAL_TASK_QUEUE` | `hotel-offer-task-queue` | Task queue shared by API (client) and worker |

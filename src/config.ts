@@ -12,6 +12,7 @@ export const config = {
   selfBaseUrl: process.env.SELF_BASE_URL || "http://localhost:3000",
   redisHost: process.env.REDIS_HOST || "localhost",
   redisPort: envInt("REDIS_PORT", 6379),
+  redisUrl: process.env.REDIS_URL || undefined,
   temporalAddress: process.env.TEMPORAL_ADDRESS || "localhost:7233",
   temporalNamespace: process.env.TEMPORAL_NAMESPACE || "default",
   temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE || "hotel-offer-task-queue",

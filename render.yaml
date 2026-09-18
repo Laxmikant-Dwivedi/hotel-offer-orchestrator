@@ -1,0 +1,118 @@
+# Render Blueprint for the Hotel Offer Orchestrator.
+#
+# Mirrors docker-compose.yml: Temporal server + Postgres (Temporal's
+# persistence store) + Redis + the api web service + the Temporal worker,
+# plus the Temporal Web UI for inspecting workflow executions.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> select this repo.
+# See README.md "Deploying to Render" for field-by-field notes and the
+# handful of things worth double-checking once services exist in your
+# dashboard (this file was authored without a live Render account to
+# verify against).
+
+databases:
+  - name: temporal-postgres
+    databaseName: temporal
+    user: temporal
+    plan: free
+
+services:
+  # Temporal Server, pulled directly from Docker Hub (no build needed).
+  # Internal-only: other services reach it at temporal:7233.
+  - type: pserv
+    name: temporal
+    runtime: image
+    image:
+      url: docker.io/temporalio/auto-setup:1.24.2
+    plan: starter
+    port: 7233
+    envVars:
+      - key: DB
+        value: postgres12
+      - key: DB_PORT
+        fromDatabase:
+          name: temporal-postgres
+          property: port
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: temporal-postgres
+          property: user
+      - key: POSTGRES_PWD
+        fromDatabase:
+          name: temporal-postgres
+          property: password
+      - key: POSTGRES_SEEDS
+        fromDatabase:
+          name: temporal-postgres
+          property: host
+      - key: POSTGRES_TLS_ENABLED
+        value: "true"
+      - key: POSTGRES_TLS_DISABLE_HOST_VERIFICATION
+        value: "true"
+
+  # Temporal Web UI, for browsing workflow executions. Optional; delete
+  # this block (and its port) if you don't need it.
+  - type: web
+    name: temporal-ui
+    runtime: image
+    image:
+      url: docker.io/temporalio/ui:2.31.2
+    plan: starter
+    port: 8080
+    envVars:
+      - key: TEMPORAL_ADDRESS
+        value: temporal:7233
+      - key: TEMPORAL_UI_PORT
+        value: "8080"
+
+  # Redis-compatible store. Holds the deduped/best-priced offer list per
+  # city as a sorted set, and serves ZRANGEBYSCORE price filtering.
+  - type: keyvalue
+    name: hotel-redis
+    plan: free
+    ipAllowList: []
+
+  # Express API: mock supplier endpoints, /api/hotels, /health.
+  - type: web
+    name: hotel-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /health
+    port: 3000
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: SELF_BASE_URL
+        value: http://hotel-api:3000
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hotel-redis
+          property: connectionString
+      - key: TEMPORAL_ADDRESS
+        value: temporal:7233
+      - key: TEMPORAL_NAMESPACE
+        value: default
+      - key: TEMPORAL_TASK_QUEUE
+        value: hotel-offer-task-queue
+
+  # Temporal Worker: runs hotelAggregationWorkflow + its activities.
+  # Same image as hotel-api, different start command, no public port.
+  - type: worker
+    name: hotel-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/temporal/worker.js
+    plan: starter
+    envVars:
+      - key: SELF_BASE_URL
+        value: http://hotel-api:3000
+      - key: TEMPORAL_ADDRESS
+        value: temporal:7233
+      - key: TEMPORAL_NAMESPACE
+        value: default
+      - key: TEMPORAL_TASK_QUEUE
+        value: hotel-offer-task-queue
